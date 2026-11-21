@@ -47,7 +47,16 @@ jobs:
                   return re.sub(commented, line, content, count=1, flags=re.M)
               return re.sub(r"(\[app\])", rf"\1\n{line}", content, count=1)
 
+          req_match = re.search(r"^\s*requirements\s*=\s*(.+)$", text, re.M)
+          if req_match:
+              reqs = [r.strip() for r in req_match.group(1).split(",") if r.strip()]
+              for pkg in ["libffi", "cffi", "pycparser"]:
+                  if pkg not in reqs:
+                      reqs.append(pkg)
+              text = set_option(text, "requirements", ",".join(reqs))
+
           text = set_option(text, "android.accept_sdk_license", "True")
+          text = set_option(text, "android.archs", "arm64-v8a")
           text = set_option(text, "p4a.branch", "develop")
           text = set_option(text, "android.api", "36")
           text = set_option(text, "android.minapi", "24")
@@ -56,6 +65,7 @@ jobs:
           with open("buildozer.spec", "w", encoding="utf-8") as f:
               f.write(text)
           EOF
+          cat buildozer.spec
           buildozer android p4a -- --help
 
       - name: Build APK
@@ -71,8 +81,16 @@ jobs:
           if os.path.exists("build.log"):
               lines = open("build.log", errors="replace").readlines()
               idx = next((i for i in range(len(lines) - 1, -1, -1) if "Command failed:" in lines[i]), len(lines))
-              print("".join(lines[max(0, idx - 60):idx + 2]))
+              print("".join(lines[max(0, idx - 80):idx + 5]))
           EOF
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-error-log
+          path: build.log
+          if-no-files-found: ignore
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
