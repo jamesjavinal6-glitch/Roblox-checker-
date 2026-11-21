@@ -2,49 +2,77 @@ name: Build APK
 
 on: [push, workflow_dispatch]
 
+env:
+  PYTHONFORANDROID_PREREQUISITES_INSTALL_INTERACTIVE: 0
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
-          python-version: '3.10'
+          python-version: '3.x'
 
       - name: Set up Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Install system and Python dependencies
+      - name: Install Buildozer and Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential ccache git zip unzip autoconf libtool pkg-config zlib1g-dev libncurses-dev libtinfo6 cmake libffi-dev libssl-dev automake libltdl-dev patch lld
-          pip install --upgrade pip "setuptools<70" wheel "cython==0.29.36" virtualenv buildozer
+          sudo apt-get install -y build-essential ccache git zip unzip autoconf libtool pkg-config zlib1g-dev libncurses-dev cmake libffi-dev libssl-dev automake libltdl-dev patch lld
+          pip install --upgrade pip setuptools wheel legacy-cgi virtualenv
+          pip install git+https://github.com/kivy/buildozer.git
 
-      - name: Patch buildozer.spec to auto-accept SDK license
+      - name: Configure temporary cloud build settings
         run: |
           python3 << 'EOF'
           import re
+
           with open("buildozer.spec", "r", encoding="utf-8") as f:
               text = f.read()
-          pattern = r"^\s*#?\s*android\.accept_sdk_license\s*=.*$"
-          if re.search(pattern, text, re.M):
-              text = re.sub(pattern, "android.accept_sdk_license = True", text, flags=re.M)
-          else:
-              text = re.sub(r"(\[app\])", r"\1\nandroid.accept_sdk_license = True", text, count=1)
+
+          def set_option(content, key, value):
+              uncommented = rf"^\s*{re.escape(key)}\s*=.*$"
+              commented = rf"^\s*#\s*{re.escape(key)}\s*=.*$"
+              line = f"{key} = {value}"
+              if re.search(uncommented, content, re.M):
+                  return re.sub(uncommented, line, content, count=1, flags=re.M)
+              if re.search(commented, content, re.M):
+                  return re.sub(commented, line, content, count=1, flags=re.M)
+              return re.sub(r"(\[app\])", rf"\1\n{line}", content, count=1)
+
+          text = set_option(text, "android.accept_sdk_license", "True")
+          text = set_option(text, "p4a.branch", "develop")
+          text = set_option(text, "android.api", "36")
+          text = set_option(text, "android.minapi", "24")
+          text = set_option(text, "android.ndk", "28c")
+
           with open("buildozer.spec", "w", encoding="utf-8") as f:
               f.write(text)
           EOF
-          grep -n "accept_sdk_license" buildozer.spec
+          buildozer android p4a -- --help
 
       - name: Build APK
         run: |
           export BUILDOZER_ALLOW_ORG_TEST_DOMAIN=1
-          buildozer android debug
+          buildozer android debug > build.log 2>&1
+
+      - name: Show exact error if build failed
+        if: failure()
+        run: |
+          python3 << 'EOF'
+          import os
+          if os.path.exists("build.log"):
+              lines = open("build.log", errors="replace").readlines()
+              idx = next((i for i in range(len(lines) - 1, -1, -1) if "Command failed:" in lines[i]), len(lines))
+              print("".join(lines[max(0, idx - 60):idx + 2]))
+          EOF
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
